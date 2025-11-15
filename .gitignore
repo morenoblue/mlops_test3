@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+dist/
+build/
+*.egg-info/
+.venv/
+.pytest_cache/
+yellow_tripdata_2010-01.parquet

@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-serve.txt /app/
+RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements-serve.txt
+COPY src/ /app/src/
+ENV PYTHONPATH=/app/src
+EXPOSE 8000
+CMD ["uvicorn", "src.serve.app:app", "--host", "0.0.0.0", "--port", "8000"]
