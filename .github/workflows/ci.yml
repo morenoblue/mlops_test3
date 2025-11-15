@@ -40,7 +40,7 @@ jobs:
 
       - name: Smoke serve
         run: |
-          docker run -d --name s -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+          docker run -d --name serve -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
           sleep 2
           curl -fsS http://localhost:18000/health
           docker rm -f s
