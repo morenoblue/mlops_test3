@@ -43,7 +43,7 @@ jobs:
           docker run -d --name serve -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
           sleep 2
           curl -fsS http://localhost:18000/health
-          docker rm -f s
+          docker rm -f serve
 
       - name: Login GHCR
         if: github.event_name != 'pull_request'

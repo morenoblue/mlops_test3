@@ -13,11 +13,17 @@ jobs:
       PROMOTE: ${{ steps.promote.outputs.PROMOTE }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Login GHCR
         uses: docker/login-action@v3
-        with: { registry: ghcr.io, username: ${{ github.actor }}, password: ${{ secrets.GITHUB_TOKEN }} }
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Pull train image
         run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
+
       - name: Big train (register + maybe alias=staging)
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
@@ -29,6 +35,7 @@ jobs:
             -e DATA_PATH="/data" \
             -e TRAIN_NROWS="1000" \
             ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }} | tee out.txt
+
       - name: Output promote flag
         id: promote
         run: |
@@ -41,11 +48,17 @@ jobs:
     runs-on: [self-hosted, staging]
     steps:
       - uses: actions/checkout@v4
+
       - name: Login GHCR
         uses: docker/login-action@v3
-        with: { registry: ghcr.io, username: ${{ github.actor }}, password: ${{ secrets.GITHUB_TOKEN }} }
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Pull serve image
         run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+
       - name: Run serving (staging alias)
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
@@ -166,3 +179,4 @@ jobs:
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
             "python -m pip install -q mlflow>=2.8 && python scripts/mlops.py promote-staging-to-production"
+
