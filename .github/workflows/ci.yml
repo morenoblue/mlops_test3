@@ -23,6 +23,8 @@ permissions: write-all
 #
 #
 
+# just to run again
+
 # name: CI (build+smoke+push)
 
 on:
