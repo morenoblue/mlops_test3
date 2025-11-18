@@ -25,8 +25,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull train image
-        run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
-        # run: docker pull ghcr.io/${{ github.repository }}:training-465a3b3c5795d3da76aa625c646871056ba1374d
+        # run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Big train (register + maybe alias=staging)
         env:
@@ -38,7 +38,7 @@ jobs:
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -e DATA_PATH="/data" \
             -e TRAIN_NROWS="1000" \
-            ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }} | tee out.txt
+            ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c }} | tee out.txt
 
       - name: Output promote flag
         id: promote
@@ -61,8 +61,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-        # run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Run serving (staging alias)
         env:
@@ -74,7 +74,7 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c }}
 
           echo "Containers right after docker run:"
           docker ps -a
@@ -114,8 +114,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-        # run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Start gateway on :8000
         env:
@@ -127,7 +127,8 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
+
           sleep 2
           curl -fsS http://localhost:8000/health
 
