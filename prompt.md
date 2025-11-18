@@ -1,7 +1,4 @@
-When I push this, to my repo (assuming there is nothing in my mlflow yet) will it work. in the end if I manually ssh into my prod machine
-will I be able to curl to localhost:8000/health and get a reponse?
-
-will both my ci and cd run?
+This is my project:
 
 
 .
@@ -76,75 +73,283 @@ will both my ci and cd run?
 
 app.py
 ```python
+import os
+import sys
+import threading
+import random
+import logging
+from typing import List, Dict, Any, Optional
+
+import pandas as pd
+import mlflow
+import mlflow.pyfunc as pyfunc
+from mlflow.exceptions import MlflowException
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-import os, threading, random, pandas as pd, mlflow, mlflow.pyfunc as pyfunc
-import sys; sys.path.append("/app/src")
-from utils.preprocessing.s1 import preprocess_data
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI"); mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-MODEL_NAME = os.getenv("MODEL_NAME","taxi-duration")
-ALIAS_STABLE = os.getenv("MODEL_ALIAS_STABLE","production")
-ALIAS_CAND = os.getenv("MODEL_ALIAS_CAND") or os.getenv("MODEL_ALIAS_CANDIDATE") or "staging"
+# Make sure we can import your preprocessing module
+sys.path.append("/app/src")
+from utils.preprocessing.s1 import preprocess_data  # type: ignore
+
+# ------------------------------------------------------------------------------
+# Logging setup
+# ------------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("taxi-serving")
+
+# ------------------------------------------------------------------------------
+# Config / env
+# ------------------------------------------------------------------------------
+
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
+MODEL_NAME = os.getenv("MODEL_NAME", "taxi-duration")
+ALIAS_STABLE = os.getenv("MODEL_ALIAS_STABLE", "production")
+ALIAS_CAND = (
+    os.getenv("MODEL_ALIAS_CAND")
+    or os.getenv("MODEL_ALIAS_CANDIDATE")
+    or "staging"
+)
+
+if not MLFLOW_TRACKING_URI:
+    logger.warning("MLFLOW_TRACKING_URI is not set! Model loading will fail.")
+
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
+logger.info("Starting Taxi Canary server")
+logger.info("CONFIG: MODEL_NAME=%r", MODEL_NAME)
+logger.info("CONFIG: ALIAS_STABLE=%r", ALIAS_STABLE)
+logger.info("CONFIG: ALIAS_CAND=%r", ALIAS_CAND)
+logger.info("CONFIG: MLFLOW_TRACKING_URI=%r", MLFLOW_TRACKING_URI)
+
+# ------------------------------------------------------------------------------
+# FastAPI app / models
+# ------------------------------------------------------------------------------
 
 app = FastAPI(title="Taxi Canary", version="1.0")
+
 
 class PredictPayload(BaseModel):
     records: List[Dict[str, Any]]
 
+
+class WeightsBody(BaseModel):
+    stable_weight: Optional[int] = None
+    cand_weight: Optional[int] = None
+
+
 _models: Dict[str, pyfunc.PyFuncModel] = {}
 _ml = threading.Lock()
 _st = threading.Lock()
-state = {"stable_weight":100,"cand_weight":0}
+state = {"stable_weight": 100, "cand_weight": 0}
 
-def _load(alias:str)->pyfunc.PyFuncModel:
+
+# ------------------------------------------------------------------------------
+# Internal helpers
+# ------------------------------------------------------------------------------
+
+def _load(alias: str) -> pyfunc.PyFuncModel:
+    """
+    Load a model for a given alias, with logging and error details.
+    """
     with _ml:
-        m=_models.get(alias)
-        if m: return m
-        m=pyfunc.load_model(f"models:/{MODEL_NAME}@{alias}")
-        _models[alias]=m
+        if alias in _models:
+            logger.debug("Using cached model for alias=%s", alias)
+            return _models[alias]
+
+        model_uri = f"models:/{MODEL_NAME}@{alias}"
+        logger.info("Loading model: alias=%s, uri=%s", alias, model_uri)
+
+        try:
+            m = pyfunc.load_model(model_uri)
+        except MlflowException as e:
+            logger.exception(
+                "MLflow error while loading model alias=%s (uri=%s)", alias, model_uri
+            )
+            # re-raise so /predict can turn it into a 5xx HTTP error with details
+            raise
+        except Exception as e:
+            logger.exception(
+                "Unexpected error while loading model alias=%s (uri=%s)", alias, model_uri
+            )
+            raise
+
+        _models[alias] = m
+        logger.info("Successfully loaded model alias=%s", alias)
         return m
 
-def _pick()->str:
-    with _st: cw=int(state["cand_weight"])
-    return "candidate" if random.randrange(100)<cw else "stable"
+
+def _pick() -> str:
+    """
+    Pick 'stable' or 'candidate' based on current weights.
+    """
+    with _st:
+        cw = int(state["cand_weight"])
+        sw = int(state["stable_weight"])
+    choice = "candidate" if random.randrange(100) < cw else "stable"
+    logger.debug(
+        "Backend pick: choice=%s (stable_weight=%s, cand_weight=%s)",
+        choice,
+        sw,
+        cw,
+    )
+    return choice
+
+
+# ------------------------------------------------------------------------------
+# Endpoints
+# ------------------------------------------------------------------------------
 
 @app.get("/health")
 def health():
-    with _st: sw, cw = state["stable_weight"], state["cand_weight"]
-    return {"ok":True,"weights":{"stable":sw,"candidate":cw}}
+    with _st:
+        sw, cw = state["stable_weight"], state["cand_weight"]
+    logger.info("Health check: stable_weight=%s, cand_weight=%s", sw, cw)
+    return {"ok": True, "weights": {"stable": sw, "candidate": cw}}
+
 
 @app.post("/predict")
 def predict(p: PredictPayload):
-    df = preprocess_data(pd.DataFrame(p.records))
-    if "trip_duration" in df.columns: df=df.drop(columns=["trip_duration"])
-    backend=_pick(); alias = ALIAS_STABLE if backend=="stable" else ALIAS_CAND
-    m=_load(alias); y=m.predict(df)
-    return JSONResponse({"backend":backend,"alias":alias,"predictions":[float(v) for v in y]})
+    logger.info("Received /predict request with %d record(s)", len(p.records))
 
-class W(BaseModel):
-    stable_weight: Optional[int]=None
-    cand_weight: Optional[int]=None
+    try:
+        # Preprocessing
+        try:
+            df = preprocess_data(pd.DataFrame(p.records))
+            logger.debug("Preprocessing done. Columns=%s", list(df.columns))
+        except Exception as e:
+            logger.exception("Error during preprocessing in /predict")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Preprocessing error: {e}",
+            )
+
+        if "trip_duration" in df.columns:
+            df = df.drop(columns=["trip_duration"])
+
+        # Routing
+        backend = _pick()
+        alias = ALIAS_STABLE if backend == "stable" else ALIAS_CAND
+        logger.info("Routing request to backend=%s alias=%s", backend, alias)
+
+        # Load model & predict
+        try:
+            m = _load(alias)
+        except Exception as e:
+            # Already logged in _load
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to load model alias '{alias}': {e}",
+            )
+
+        try:
+            y = m.predict(df)
+        except Exception as e:
+            logger.exception(
+                "Error during model.predict for alias=%s", alias
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prediction error for alias '{alias}': {e}",
+            )
+
+        preds = [float(v) for v in y]
+        logger.info(
+            "Prediction successful: backend=%s alias=%s n=%d",
+            backend,
+            alias,
+            len(preds),
+        )
+        return JSONResponse(
+            {
+                "backend": backend,
+                "alias": alias,
+                "predictions": preds,
+            }
+        )
+
+    except HTTPException:
+        # Already logged and structured
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error in /predict")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error in /predict: {e}",
+        )
+
 
 @app.post("/admin/weights")
-def weights(b:W):
-    if b.stable_weight is None and b.cand_weight is None: raise HTTPException(400,"set a weight")
+def weights(body: WeightsBody):
+    logger.info("Received /admin/weights body=%s", body.dict())
+    if body.stable_weight is None and body.cand_weight is None:
+        logger.warning("/admin/weights called without any weights set")
+        raise HTTPException(status_code=400, detail="set a weight")
+
     with _st:
-        if b.stable_weight is not None: state["stable_weight"]=int(b.stable_weight)
-        if b.cand_weight is not None: state["cand_weight"]=int(b.cand_weight)
-        if b.stable_weight is None: state["stable_weight"]=100-state["cand_weight"]
-        if b.cand_weight is None: state["cand_weight"]=100-state["stable_weight"]
-        t=state["stable_weight"]+state["cand_weight"]
-        if t!=100:
-            sw=round(100*state["stable_weight"]/t); state["stable_weight"]=sw; state["cand_weight"]=100-sw
-    return {"ok":True,"weights":state}
+        old_state = dict(state)
+        if body.stable_weight is not None:
+            state["stable_weight"] = int(body.stable_weight)
+        if body.cand_weight is not None:
+            state["cand_weight"] = int(body.cand_weight)
+
+        if body.stable_weight is None:
+            state["stable_weight"] = 100 - state["cand_weight"]
+        if body.cand_weight is None:
+            state["cand_weight"] = 100 - state["stable_weight"]
+
+        t = state["stable_weight"] + state["cand_weight"]
+        if t != 100:
+            sw = round(100 * state["stable_weight"] / t)
+            state["stable_weight"] = sw
+            state["cand_weight"] = 100 - sw
+
+        logger.info(
+            "Weights updated: old=%s new=%s", old_state, state
+        )
+
+    return {"ok": True, "weights": state}
+
 
 @app.post("/admin/reload")
-def reload():
-    with _ml: _models.clear()
-    return {"ok":True}
+def reload_models():
+    logger.info("Received /admin/reload – clearing model cache")
+    with _ml:
+        _models.clear()
+    return {"ok": True}
+
+
+@app.get("/debug/state")
+def debug_state():
+    """
+    Optional helper endpoint so you can inspect state via curl while debugging.
+    DO NOT expose this in a real public deployment.
+    """
+    with _st:
+        sw, cw = state["stable_weight"], state["cand_weight"]
+    loaded_aliases = list(_models.keys())
+    logger.info(
+        "Debug state requested: stable_weight=%s, cand_weight=%s, loaded_aliases=%s",
+        sw,
+        cw,
+        loaded_aliases,
+    )
+    return {
+        "weights": {"stable_weight": sw, "cand_weight": cw},
+        "loaded_aliases": loaded_aliases,
+        "config": {
+            "MODEL_NAME": MODEL_NAME,
+            "ALIAS_STABLE": ALIAS_STABLE,
+            "ALIAS_CAND": ALIAS_CAND,
+            "MLFLOW_TRACKING_URI": MLFLOW_TRACKING_URI,
+        },
+    }
+
 ```
 
 random_forest.py
@@ -410,75 +615,102 @@ build
 
 ci.yml
 ```yml
-name: CI (build+smoke+push)
+
+# dummy code version, just to avoid increasing wait times between the iterations since we are focusin on the cd.yml rn:
+
+name: CI
+run-name: "${{ github.workflow }}"
+
+permissions: write-all
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  build-train-serve:
+  dummy:
     runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - name: Fast dummy CI
+        run: echo "Dummy CI run – just here to trigger CD"
 
-      - name: Build train
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          load: true
-          tags: |
-            ghcr.io/${{ github.repository }}:training-${{ github.sha }}
 
-      - name: Smoke train (local file store)
-        run: |
-          docker run --rm \
-            -e MLFLOW_TRACKING_URI="file:/tmp/mlruns" \
-            -e DATA_PATH="/app/src/data/smoke_sample.parquet" \
-            -e TRAIN_NROWS="256" \
-            ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+# original code:
 
-      - name: Build serve
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.serve
-          load: true
-          tags: |
-            ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+# name: CI
 
-      - name: Smoke serve
-        run: |
-          docker run -d --name serve -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
-          sleep 2
-          curl -fsS http://localhost:18000/health
-          docker rm -f serve
-
-      - name: Login GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push images
-        if: github.event_name != 'pull_request'
-        run: |
-          docker push ghcr.io/${{ github.repository }}:training-${{ github.sha }}
-          docker push ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+# on:
+#   push:
+#   pull_request:
+#
+# jobs:
+#   build-train-serve:
+#     runs-on: ubuntu-latest
+#     permissions: { contents: read, packages: write }
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: docker/setup-buildx-action@v3
+#
+#       - name: Build train
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: Dockerfile
+#           load: true
+#           tags: |
+#             ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+#
+#       - name: Smoke train (local file store)
+#         run: |
+#           docker run --rm \
+#             -e MLFLOW_TRACKING_URI="file:/tmp/mlruns" \
+#             -e DATA_PATH="/app/src/data/smoke_sample.parquet" \
+#             -e TRAIN_NROWS="256" \
+#             ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+#
+#       - name: Build serve
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: Dockerfile.serve
+#           load: true
+#           tags: |
+#             ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+#
+#       - name: Smoke serve
+#         run: |
+#           docker run -d --name serve -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+#           sleep 2
+#           curl -fsS http://localhost:18000/health
+#           docker rm -f serve
+#
+#       - name: Login GHCR
+#         if: github.event_name != 'pull_request'
+#         uses: docker/login-action@v3
+#         with:
+#           registry: ghcr.io
+#           username: ${{ github.actor }}
+#           password: ${{ secrets.GITHUB_TOKEN }}
+#
+#       - name: Push images
+#         if: github.event_name != 'pull_request'
+#         run: |
+#           docker push ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+#           docker push ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
 ```
 
 cd.yml
 ```yml
-name: CD (train→staging→prod canary)
+
+name: CD
+run-name: "${{ github.workflow }}"
+
+permissions: write-all
 
 on:
   workflow_run:
-    workflows: ["CI (build+smoke+push)"]
+    workflows: ["CI"]
     types: [completed]
 
 jobs:
@@ -498,7 +730,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull train image
-        run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Big train (register + maybe alias=staging)
         env:
@@ -510,7 +743,7 @@ jobs:
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -e DATA_PATH="/data" \
             -e TRAIN_NROWS="1000" \
-            ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }} | tee out.txt
+            ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c | tee out.txt
 
       - name: Output promote flag
         id: promote
@@ -533,7 +766,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Run serving (staging alias)
         env:
@@ -545,12 +779,30 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-          sleep 3
+            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c 
+
+          echo "Containers right after docker run:"
+          docker ps -a
+
+          sleep 5
+          # Make candidate 100% for staging smoke test
+          curl -fsS -X POST http://localhost:8000/admin/weights \
+               -H "Content-Type: application/json" \
+               -d '{"cand_weight":100}'
+
           curl -fsS http://localhost:8000/health
           curl -fsS -X POST http://localhost:8000/predict \
             -H "Content-Type: application/json" \
             -d '{"records":[{"vendor_id":1,"pickup_datetime":"2010-01-15T08:30:00","dropoff_datetime":"2010-01-15T08:45:00","passenger_count":1,"trip_distance":2.3,"pickup_longitude":-73.99,"pickup_latitude":40.73,"rate_code":1,"dropoff_longitude":-73.98,"dropoff_latitude":40.75,"fare_amount":12.5,"surcharge":0.5,"mta_tax":0.5,"tip_amount":2.0,"tolls_amount":0.0,"total_amount":15.5,"store_and_fwd_flag":"N","payment_type":"CRD"}]}'
+
+      - name: Dump model-staging logs
+        if: failure()
+        run: |
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== logs for model-staging ==="
+          docker logs model-staging || true
+
 
   prod_canary:
     needs: [train_big, staging]
@@ -567,7 +819,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
 
       - name: Start gateway on :8000
         env:
@@ -579,7 +832,8 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
+
           sleep 2
           curl -fsS http://localhost:8000/health
 
@@ -657,3 +911,115 @@ jobs:
             "python -m pip install -q mlflow>=2.8 && python scripts/mlops.py promote-staging-to-production"
 
 ```
+
+
+
+
+
+-------------------------------------------------------------------
+
+
+The ci runs fine. the problem is the cd.yml. its showing this:
+
+
+```txt
+
+Run docker run --rm --network host \
+  docker run --rm --network host \
+    -v "$HOME/train_data:/data:ro" \
+    -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
+    -e DATA_PATH="/data" \
+    -e TRAIN_NROWS="1000" \
+    ghcr.io/morenoblue/mlops_test3:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c | tee out.txt
+  shell: /usr/bin/bash -e {0}
+  env:
+    MLFLOW_TRACKING_URI: ***
+    HOME_DIR: 
+2025/11/18 17:52:04 INFO mlflow.tracking.fluent: Experiment with name 'taxi-duration' does not exist. Creating a new experiment.
+2025/11/18 17:52:05 WARNING mlflow.utils.git_utils: Failed to import Git (the Git executable is probably not on your PATH), so Git SHA is not available. Error: Failed to initialize: Bad git executable.
+The git executable must be specified in one of the following ways:
+    - be included in your $PATH
+    - be set via $GIT_PYTHON_GIT_EXECUTABLE
+    - explicitly set via git.refresh(<full-path-to-git-executable>)
+All git commands will error until this is rectified.
+This initial message can be silenced or aggravated in the future by setting the
+$GIT_PYTHON_REFRESH environment variable. Use one of the following values:
+    - quiet|q|silence|s|silent|none|n|0: for no message or exception
+    - warn|w|warning|log|l|1: for a warning message (logging level CRITICAL, displayed by default)
+    - error|e|exception|raise|r|2: for a raised exception
+Example:
+    export GIT_PYTHON_REFRESH=quiet
+urllib3.exceptions.ResponseError: too many 503 error responses
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/urllib3/connectionpool.py", line 942, in urlopen
+    return self.urlopen(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/urllib3/connectionpool.py", line 942, in urlopen
+    return self.urlopen(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/urllib3/connectionpool.py", line 942, in urlopen
+    return self.urlopen(
+           ^^^^^^^^^^^^^
+  [Previous line repeated 4 more times]
+  File "/usr/local/lib/python3.11/site-packages/urllib3/connectionpool.py", line 932, in urlopen
+    retries = retries.increment(method, url, response=response, _pool=self)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='10.17.0.223', port=5000): Max retries exceeded with url: /api/2.0/mlflow/runs/create (Caused by ResponseError('too many 503 error responses'))
+During handling of the above exception, another exception occurred:
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/mlflow/utils/rest_utils.py", line 236, in http_request
+    return _get_http_response_with_retries(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/utils/request_utils.py", line 237, in _get_http_response_with_retries
+    return session.request(method, url, allow_redirects=allow_redirects, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/requests/adapters.py", line 668, in send
+    raise RetryError(e, request=request)
+requests.exceptions.RetryError: HTTPConnectionPool(host='10.17.0.223', port=5000): Max retries exceeded with url: /api/2.0/mlflow/runs/create (Caused by ResponseError('too many 503 error responses'))
+During handling of the above exception, another exception occurred:
+Traceback (most recent call last):
+  File "/app/src/train.py", line 75, in <module>
+    main()
+  File "/app/src/train.py", line 26, in main
+    with mlflow.start_run() as run:
+         ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/fluent.py", line 478, in start_run
+    active_run_obj = client.create_run(
+                     ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/client.py", line 479, in create_run
+    return self._tracking_client.create_run(experiment_id, start_time, tags, run_name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/telemetry/track.py", line 30, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/_tracking_service/client.py", line 183, in create_run
+    return self.store.create_run(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/store/tracking/rest_store.py", line 340, in create_run
+    response_proto = self._call_endpoint(CreateRun, req_body)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/store/tracking/rest_store.py", line 203, in _call_endpoint
+    return call_endpoint(
+           ^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/utils/rest_utils.py", line 594, in call_endpoint
+    response = http_request(**call_kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/mlflow/utils/rest_utils.py", line 259, in http_request
+    raise MlflowException(f"API request to {url} failed with exception {e}")
+mlflow.exceptions.MlflowException: API request to ***/api/2.0/mlflow/runs/create failed with exception HTTPConnectionPool(host='10.17.0.223', port=5000): Max retries exceeded with url: /api/2.0/mlflow/runs/create (Caused by ResponseError('too many 503 error responses'))
+```
+
+Do you know what's going on?

@@ -1,12 +1,9 @@
-# .github/workflows/ci.yml
+# dummy code version, just to avoid increasing wait times between the iterations since we are focusin on the cd.yml rn:
+
 name: CI
 run-name: "${{ github.workflow }}"
 
 permissions: write-all
-
-# # batman vs superman
-# # lola vs shopa
-# # tshola vs shulamen
 
 on:
   push:
@@ -21,11 +18,9 @@ jobs:
         run: echo "Dummy CI run – just here to trigger CD"
 
 
+# original code:
 
-
-# just to run again
-
-# name: CI (build+smoke+push)
+# name: CI
 
 # on:
 #   push:
