@@ -1,6 +1,8 @@
 name: CD
 run-name: "${{ github.workflow }}"
 
+# vai
+
 permissions: write-all
 
 on:
