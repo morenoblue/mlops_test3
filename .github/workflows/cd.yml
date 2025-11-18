@@ -38,7 +38,7 @@ jobs:
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -e DATA_PATH="/data" \
             -e TRAIN_NROWS="1000" \
-            ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c }} | tee out.txt
+            ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c | tee out.txt
 
       - name: Output promote flag
         id: promote
@@ -74,7 +74,7 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c }}
+            ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c 
 
           echo "Containers right after docker run:"
           docker ps -a
