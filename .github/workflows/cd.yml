@@ -5,7 +5,7 @@ permissions: write-all
 
 on:
   workflow_run:
-    workflows: ["CI (build+smoke+push)"]
+    workflows: ["CI"]
     types: [completed]
 
 jobs:
