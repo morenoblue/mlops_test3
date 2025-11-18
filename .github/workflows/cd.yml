@@ -76,9 +76,15 @@ jobs:
             -e MODEL_ALIAS_CAND="staging" \
             ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
 
-            echo "Containers right after docker run:"
+          echo "Containers right after docker run:"
           docker ps -a
+
           sleep 5
+          # Make candidate 100% for staging smoke test
+          curl -fsS -X POST http://localhost:8000/admin/weights \
+               -H "Content-Type: application/json" \
+               -d '{"cand_weight":100}'
+
           curl -fsS http://localhost:8000/health
           curl -fsS -X POST http://localhost:8000/predict \
             -H "Content-Type: application/json" \
