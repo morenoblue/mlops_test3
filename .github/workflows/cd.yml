@@ -25,8 +25,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull train image
-        # run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
-        run: docker pull ghcr.io/${{ github.repository }}:training-465a3b3c5795d3da76aa625c646871056ba1374d
+        run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:training-465a3b3c5795d3da76aa625c646871056ba1374d
 
       - name: Big train (register + maybe alias=staging)
         env:
@@ -38,7 +38,7 @@ jobs:
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -e DATA_PATH="/data" \
             -e TRAIN_NROWS="1000" \
-            ghcr.io/${{ github.repository }}:training-465a3b3c5795d3da76aa625c646871056ba1374d | tee out.txt
+            ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }} | tee out.txt
 
       - name: Output promote flag
         id: promote
@@ -61,8 +61,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-        run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
 
       - name: Run serving (staging alias)
         env:
@@ -74,7 +74,7 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
 
           echo "Containers right after docker run:"
           docker ps -a
@@ -89,6 +89,15 @@ jobs:
           curl -fsS -X POST http://localhost:8000/predict \
             -H "Content-Type: application/json" \
             -d '{"records":[{"vendor_id":1,"pickup_datetime":"2010-01-15T08:30:00","dropoff_datetime":"2010-01-15T08:45:00","passenger_count":1,"trip_distance":2.3,"pickup_longitude":-73.99,"pickup_latitude":40.73,"rate_code":1,"dropoff_longitude":-73.98,"dropoff_latitude":40.75,"fare_amount":12.5,"surcharge":0.5,"mta_tax":0.5,"tip_amount":2.0,"tolls_amount":0.0,"total_amount":15.5,"store_and_fwd_flag":"N","payment_type":"CRD"}]}'
+
+      - name: Dump model-staging logs
+        if: failure()
+        run: |
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== logs for model-staging ==="
+          docker logs model-staging || true
+
 
   prod_canary:
     needs: [train_big, staging]
@@ -105,8 +114,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull serve image
-        # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-        run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+        run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
+        # run: docker pull ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
 
       - name: Start gateway on :8000
         env:
@@ -118,7 +127,7 @@ jobs:
             -e MODEL_NAME="taxi-duration" \
             -e MODEL_ALIAS_STABLE="production" \
             -e MODEL_ALIAS_CAND="staging" \
-            ghcr.io/${{ github.repository }}:serving-465a3b3c5795d3da76aa625c646871056ba1374d
+            ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
           sleep 2
           curl -fsS http://localhost:8000/health
 
