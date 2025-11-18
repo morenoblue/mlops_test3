@@ -1,5 +1,8 @@
 # .github/workflows/ci.yml
-name: CI (build+smoke+push)
+name: CI
+run-name: "${{ github.workflow }}"
+
+permissions: write-all
 
 on:
   push:
