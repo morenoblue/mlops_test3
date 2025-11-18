@@ -6,6 +6,7 @@ permissions: write-all
 
 # batman vs superman
 # lola vs shopa
+# tshola vs shulamen
 
 on:
   push:
