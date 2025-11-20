@@ -44,10 +44,12 @@ jobs:
 
       - name: Start the server
         run: |
-          docker run -d \
-            --name serve \
-            -p 8000:8000 \
-            "$SERVE_IMAGE"
+          docker run -d                                    \
+                     --name serve                          \
+                     -p 8000:8000                          \
+                     -e MLFLOW_TRACKING_URI="file:/mlruns" \
+                     -e MODEL_ALIAS_STABLE="staging"       \
+                     "$SERVE_IMAGE"
 
 
       - name: Check the server's health
