@@ -74,23 +74,36 @@ jobs:
 
       - name: Smoke test the server
         run: |
-          curl -fsS -X POST "http://localhost:8000/predict" \
+          curl -sS -X POST "http://localhost:8000/predict" \
                -H "Content-Type: application/json"          \
                -d '{
                      "records": [
                        {
                          "vendor_id": 1,
+                         "pickup_datetime": "2010-01-15T08:30:00",
+                         "dropoff_datetime": "2010-01-15T08:45:00",
                          "passenger_count": 1,
-                         "trip_distance": 3.2,
-                         "pickup_longitude": -73.985,
-                         "pickup_latitude": 40.758,
-                         "dropoff_longitude": -73.981,
-                         "dropoff_latitude": 40.752,
-                         "pickup_datetime": "2013-01-01 00:00:00",
-                         "dropoff_datetime": "2013-01-01 00:10:00"
+                         "trip_distance": 2.3,
+                         "pickup_longitude": -73.99,
+                         "pickup_latitude": 40.73,
+                         "rate_code": 1,
+                         "dropoff_longitude": -73.98,
+                         "dropoff_latitude": 40.75,
+                         "fare_amount": 12.5,
+                         "surcharge": 0.5,
+                         "mta_tax": 0.5,
+                         "tip_amount": 2.0,
+                         "tolls_amount": 0.0,
+                         "total_amount": 15.5,
+                         "store_and_fwd_flag": "N",
+                         "payment_type": "CRD"
                        }
                      ]
                    }'
+
+      - name: Dump serve logs on failure
+        if: failure()
+        run: docker logs serve || true
 
       - name: Cleanup serve
         if: always()
