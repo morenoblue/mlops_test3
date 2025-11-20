@@ -22,6 +22,7 @@ jobs:
     env:
       TRAIN_IMAGE_SHA: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
       TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
+      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
 
     steps:
       - name: Clone the repo to the runner vm
@@ -40,10 +41,10 @@ jobs:
 
       - name: Smoke test the training image
         run: |
-          mkdir -p mlruns
           docker run --rm \
-            -v "$PWD/mlruns:/mlruns" \
-            -e MLFLOW_TRACKING_URI="file:/mlruns" \
+            -e MLFLOW_TRACKING_URI= "${MLFLOW_TRACKING_URI}" \
+            -e MLFLOW_EXPERIMENT_NAME="taxi-duration-ci" \
+            -e MODEL_NAME="taxi-duration-ci" \
             -e DATA_PATH="src/data/smoke_sample.parquet" \
             -e TRAIN_NROWS="256" \
             "$TRAIN_IMAGE_SHA"

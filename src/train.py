@@ -10,8 +10,9 @@ from sklearn.metrics import mean_squared_error
 # I'm adding this cuz I want the workflow to run again
 
 mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-EXP = "taxi-duration"
-NAME = "taxi-duration"
+
+EXP = os.getenv("MLFLOW_EXPERIMENT_NAME", "taxi-duration")
+NAME = os.getenv("MODEL_NAME", "taxi-duration")
 
 get_model = importlib.import_module("models.random_forest").get
 pl = importlib.import_module("pipelines.pipeline_taxi_duration")
