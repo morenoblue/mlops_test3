@@ -1,12 +1,11 @@
 name: CD
 run-name: "${{ github.workflow }}"
 
-# vai
-
 permissions: write-all
 
 on:
   workflow_run:
+    workflow_dispatch:
     workflows: ["CI"]
     types: [completed]
 
@@ -142,7 +141,7 @@ jobs:
           docker run --rm --network host \
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-            "python -m pip install -q mlflow>=2.8 && python scripts/mlops.py has-production" > has_prod.txt
+            "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py has-production" > has_prod.txt
           echo "HAS_PROD=$(tr -d '\n\r' < has_prod.txt)" >> $GITHUB_OUTPUT
 
       # First run: 100% candidate, then promote
@@ -162,7 +161,7 @@ jobs:
           docker run --rm --network host \
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-            "python -m pip install -q mlflow>=2.8 && python scripts/mlops.py promote-staging-to-production"
+            "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py promote-staging-to-production"
 
       # Subsequent runs: 10% → soak 5m → 50% → soak 5m → 100%, then promote
       - name: Canary 10%
@@ -205,5 +204,5 @@ jobs:
           docker run --rm --network host \
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-            "python -m pip install -q mlflow>=2.8 && python scripts/mlops.py promote-staging-to-production"
+            "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py promote-staging-to-production"
 
