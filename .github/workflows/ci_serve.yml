@@ -5,6 +5,11 @@ permissions: { contents: read, packages: write }
 on:
   workflow_dispatch:
 
+  push:
+    paths-ignore:
+      - "src/train.py"
+      - ".github/workflows/ci_train.yml"
+
   workflow_run:
     workflows: ["CI Train"]
     types:

@@ -3,8 +3,14 @@ run-name: "${{ github.workflow }}"
 permissions: { contents: read, packages: write }
 
 on:
+
   workflow_dispatch:
+
   push:
+    paths:
+      - "src/train.py"
+      - ".github/workflows/ci_train.yml"
+
   pull_request:
 
 jobs:
