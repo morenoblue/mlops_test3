@@ -17,7 +17,7 @@ jobs:
 
   add-the-training-image-to-the-repo:
 
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, trainer]
 
     env:
       TRAIN_IMAGE_SHA: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
