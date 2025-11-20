@@ -18,16 +18,13 @@
 #       - name: Fast dummy CI
 #         run: echo "Dummy CI run – just here to trigger CD"
 
-
-
-
 ########################################################################################################################
 # Original code:
 ########################################################################################################################
 
 name: CI
 run-name: "${{ github.workflow }}"
-permissions: write-all
+permissions: { contents: read, packages: write }
 
 on:
   workflow_dispatch:
@@ -35,45 +32,88 @@ on:
   pull_request:
 
 jobs:
-  build-train-serve:
-    runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
 
-      - name: Build train
+  add-required-images-to-the-repo:
+
+    runs-on: ubuntu-latest
+
+    env:
+      TRAIN_IMAGE: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
+      SERVE_IMAGE: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
+
+    steps:
+
+      - name: Clone the repo to the runner vm
+        uses: actions/checkout@v4
+
+      - name: Install docker on the vm
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the training image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           load: true
-          tags: |
-            ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+          tags: ${{ env.TRAIN_IMAGE }}
 
-      - name: Smoke train (local file store)
+      - name: Smoke test the training image
         run: |
-          docker run --rm \
-            -e MLFLOW_TRACKING_URI="file:/tmp/mlruns" \
-            -e DATA_PATH="/app/src/data/smoke_sample.parquet" \
-            -e TRAIN_NROWS="256" \
-            ghcr.io/${{ github.repository }}:training-${{ github.sha }}
+          mkdir -p mlruns
+          docker run --rm                                         \
+                     -v "$PWD/mlruns:/mlruns"                     \
+                     -e MLFLOW_TRACKING_URI="file:/mlruns"        \
+                     -e DATA_PATH="src/data/smoke_sample.parquet" \
+                     -e TRAIN_NROWS="256"                         \
+                     "$TRAIN_IMAGE"
 
-      - name: Build serve
+      - name: Build the serving image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.serve
           load: true
-          tags: |
-            ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+          tags: ${{ env.SERVE_IMAGE }} 
 
-      - name: Smoke serve
+      - name: Start the server
         run: |
-          docker run -d --name serve -p 18000:8000 ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
-          sleep 2
-          curl -fsS http://localhost:18000/health
-          docker rm -f serve
+          docker run -d                                    \
+                     --name serve                          \
+                     -p 8000:8000                          \
+                     -v "$PWD/mlruns:/mlruns"              \
+                     -e MLFLOW_TRACKING_URI="file:/mlruns" \
+                     "$SERVE_IMAGE"
+
+      - name: Check the serve's health
+        uses: jtalk/url-health-check-action@v3
+        with:
+          url: http://localhost:8000/health
+          max-attempts: 15
+          retry-delay: 2  
+
+      - name: Smoke test the server
+        run: |
+          curl -fsS -X POST "http://localhost:8000/predict" \
+               -H "Content-Type: application/json"          \
+               -d '{
+                     "records": [
+                       {
+                         "vendor_id": 1,
+                         "passenger_count": 1,
+                         "trip_distance": 3.2,
+                         "pickup_longitude": -73.985,
+                         "pickup_latitude": 40.758,
+                         "dropoff_longitude": -73.981,
+                         "dropoff_latitude": 40.752,
+                         "pickup_datetime": "2013-01-01 00:00:00",
+                         "dropoff_datetime": "2013-01-01 00:10:00"
+                       }
+                     ]
+                   }'
+
+      - name: Cleanup serve
+        if: always()
+        run: docker rm -f serve
 
       - name: Login GHCR
         if: github.event_name != 'pull_request'
@@ -86,5 +126,5 @@ jobs:
       - name: Push images
         if: github.event_name != 'pull_request'
         run: |
-          docker push ghcr.io/${{ github.repository }}:training-${{ github.sha }}
-          docker push ghcr.io/${{ github.repository }}:serving-${{ github.sha }}
+          docker push "$TRAIN_IMAGE"
+          docker push "$SERVE_IMAGE"
