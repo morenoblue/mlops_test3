@@ -42,7 +42,7 @@ jobs:
       - name: Smoke test the training image
         run: |
           docker run --rm \
-            -e MLFLOW_TRACKING_URI= "${MLFLOW_TRACKING_URI}" \
+            -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
             -e MLFLOW_EXPERIMENT_NAME="taxi-duration-ci" \
             -e MODEL_NAME="taxi-duration-ci" \
             -e DATA_PATH="src/data/smoke_sample.parquet" \
