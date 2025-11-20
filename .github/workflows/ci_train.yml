@@ -1,0 +1,61 @@
+name: CI Train
+run-name: "${{ github.workflow }}"
+permissions: { contents: read, packages: write }
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+
+  add-the-training-image-to-the-repo:
+
+    runs-on: ubuntu-latest
+
+    env:
+      TRAIN_IMAGE_SHA: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
+      TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
+
+    steps:
+      - name: Clone the repo to the runner vm
+        uses: actions/checkout@v4
+
+      - name: Install docker on the vm
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the training image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: ${{ env.TRAIN_IMAGE_SHA }}
+
+      - name: Smoke test the training image
+        run: |
+          mkdir -p mlruns
+          docker run --rm \
+            -v "$PWD/mlruns:/mlruns" \
+            -e MLFLOW_TRACKING_URI="file:/mlruns" \
+            -e DATA_PATH="src/data/smoke_sample.parquet" \
+            -e TRAIN_NROWS="256" \
+            "$TRAIN_IMAGE_SHA"
+
+      - name: Tag training image as latest
+        run: docker tag "$TRAIN_IMAGE_SHA" "$TRAIN_IMAGE_LATEST"
+
+      - name: Login GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push training images
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "$TRAIN_IMAGE_SHA"
+          docker push "$TRAIN_IMAGE_LATEST"
+
