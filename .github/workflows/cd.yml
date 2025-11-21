@@ -1,6 +1,5 @@
 name: CD
 run-name: "${{ github.workflow }}"
-
 permissions: write-all
 
 on:
@@ -90,8 +89,9 @@ jobs:
       SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
 
     steps:
+
       - name: Clone the repo to the runner vm
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Login GHCR
         uses: docker/login-action@v3
@@ -193,7 +193,7 @@ jobs:
     steps:
 
       - name: Clone the repo to the runner vm
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Login to GHCR
         uses: docker/login-action@v3
