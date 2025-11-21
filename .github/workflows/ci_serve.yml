@@ -12,13 +12,21 @@ on:
 
 jobs:
   add-the-serving-image-to-the-repo:
+
+    # note(@morenoblue): The `if` below means run this thing always for workflow_dispatch. For workflow_run, only
+    #                    run only if the upstream workflow (CI Train) succeeded
+
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 
     runs-on: [self-hosted, trainer]
 
     env:
-      IMAGE_REPO: ghcr.io/${{ github.repository }}
-      SERVE_IMAGE: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
+      TRAIN_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
+      TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
+
+      SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
+      SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
+
       MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
       MODEL_NAME: taxi-duration-ci
 
@@ -32,9 +40,11 @@ jobs:
       - name: Decide which training image to use
         run: |
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "TRAIN_IMAGE=${{ env.IMAGE_REPO }}:train-${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_ENV"
+            echo "Using TRAIN_IMAGE_CURRENT (train-${{ github.sha }})"
+            echo "TRAIN_IMAGE=${{ env.TRAIN_IMAGE_CURRENT }}" >> "$GITHUB_ENV"
           else
-            echo "TRAIN_IMAGE=${{ env.IMAGE_REPO }}:train-latest" >> "$GITHUB_ENV"
+            echo "Using TRAIN_IMAGE_LATEST (train-latest)"
+            echo "TRAIN_IMAGE=${{ env.TRAIN_IMAGE_LATEST }}" >> "$GITHUB_ENV"
           fi
 
       - name: Build the serving image
@@ -43,7 +53,10 @@ jobs:
           context: .
           file: Dockerfile.serve
           load: true
-          tags: ${{ env.SERVE_IMAGE }}
+          tags: ${{ env.SERVE_IMAGE_CURRENT }}
+
+      - name: Tag serving image as latest
+        run: docker tag "$SERVE_IMAGE_CURRENT" "$SERVE_IMAGE_LATEST"
 
       - name: Start the server
         run: |
@@ -51,9 +64,9 @@ jobs:
             --name serve                                    \
             -p 8000:8000                                    \
             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-            -e MODEL_NAME="taxi-duration-ci"                \
+            -e MODEL_NAME="${MODEL_NAME}"                   \
             -e MODEL_ALIAS_STABLE="staging"                 \
-            "$SERVE_IMAGE"
+            "$SERVE_IMAGE_CURRENT"
 
       - name: Check the server's health
         run: |
@@ -75,7 +88,7 @@ jobs:
       - name: Smoke test the server
         run: |
           curl -sS -X POST "http://localhost:8000/predict" \
-               -H "Content-Type: application/json"          \
+               -H "Content-Type: application/json"         \
                -d '{
                      "records": [
                        {
@@ -117,7 +130,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push serving image
+      - name: Push serving images
         if: github.event_name != 'pull_request'
-        run: docker push "$SERVE_IMAGE"
+        run: |
+          docker push "$SERVE_IMAGE_CURRENT"
+          docker push "$SERVE_IMAGE_LATEST"
 

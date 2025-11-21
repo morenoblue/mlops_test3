@@ -1,208 +1,258 @@
-# name: CD
-# run-name: "${{ github.workflow }}"
-#
-# permissions: write-all
-#
-# on:
-#   workflow_run:
-#     workflow_dispatch:
-#     workflows: ["CI"]
-#     types: [completed]
-#
-# jobs:
-#   train_big:
-#     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' }}
-#     runs-on: [self-hosted, trainer]
-#     outputs:
-#       PROMOTE: ${{ steps.promote.outputs.PROMOTE }}
-#     steps:
-#       - uses: actions/checkout@v4
-#
-#       - name: Login GHCR
-#         uses: docker/login-action@v3
-#         with:
-#           registry: ghcr.io
-#           username: ${{ github.actor }}
-#           password: ${{ secrets.GITHUB_TOKEN }}
-#
-#       - name: Pull train image
-#         # run: docker pull ghcr.io/${{ github.repository }}:training-${{ github.event.workflow_run.head_sha }}
-#         run: docker pull ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
-#
-#       - name: Big train (register + maybe alias=staging)
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#           HOME_DIR: ${{ env.HOME }}
-#         run: |
-#           docker run --rm --network host \
-#             -v "$HOME/train_data:/data:ro" \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -e DATA_PATH="/data" \
-#             -e TRAIN_NROWS="1000" \
-#             ghcr.io/${{ github.repository }}:training-72f8e0f8de9e1b325f52b7dfe21650bdd862275c | tee out.txt
-#
-#       - name: Output promote flag
-#         id: promote
-#         run: |
-#           v=$(grep -o 'PROMOTE=[01]' out.txt | tail -n1 | cut -d= -f2 || echo 1)
-#           echo "PROMOTE=$([ "$v" = "1" ] && echo true || echo false)" >> $GITHUB_OUTPUT
-#
-#   staging:
-#     needs: [train_big]
-#     if: ${{ needs.train_big.outputs.PROMOTE == 'true' }}
-#     runs-on: [self-hosted, staging]
-#     steps:
-#       - uses: actions/checkout@v4
-#
-#       - name: Login GHCR
-#         uses: docker/login-action@v3
-#         with:
-#           registry: ghcr.io
-#           username: ${{ github.actor }}
-#           password: ${{ secrets.GITHUB_TOKEN }}
-#
-#       - name: Pull serve image
-#         # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-#         run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
-#
-#       - name: Run serving (staging alias)
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#         run: |
-#           docker rm -f model-staging || true
-#           docker run -d --name model-staging -p 8000:8000 \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -e MODEL_NAME="taxi-duration" \
-#             -e MODEL_ALIAS_STABLE="production" \
-#             -e MODEL_ALIAS_CAND="staging" \
-#             ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c 
-#
-#           echo "Containers right after docker run:"
-#           docker ps -a
-#
-#           sleep 5
-#           # Make candidate 100% for staging smoke test
-#           curl -fsS -X POST http://localhost:8000/admin/weights \
-#                -H "Content-Type: application/json" \
-#                -d '{"cand_weight":100}'
-#
-#           curl -fsS http://localhost:8000/health
-#           curl -fsS -X POST http://localhost:8000/predict \
-#             -H "Content-Type: application/json" \
-#             -d '{"records":[{"vendor_id":1,"pickup_datetime":"2010-01-15T08:30:00","dropoff_datetime":"2010-01-15T08:45:00","passenger_count":1,"trip_distance":2.3,"pickup_longitude":-73.99,"pickup_latitude":40.73,"rate_code":1,"dropoff_longitude":-73.98,"dropoff_latitude":40.75,"fare_amount":12.5,"surcharge":0.5,"mta_tax":0.5,"tip_amount":2.0,"tolls_amount":0.0,"total_amount":15.5,"store_and_fwd_flag":"N","payment_type":"CRD"}]}'
-#
-#       - name: Dump model-staging logs
-#         if: failure()
-#         run: |
-#           echo "=== docker ps -a ==="
-#           docker ps -a || true
-#           echo "=== logs for model-staging ==="
-#           docker logs model-staging || true
-#
-#
-#   prod_canary:
-#     needs: [train_big, staging]
-#     if: ${{ needs.train_big.outputs.PROMOTE == 'true' }}
-#     runs-on: [self-hosted, production]
-#     steps:
-#       - uses: actions/checkout@v4
-#
-#       - name: Login GHCR
-#         uses: docker/login-action@v3
-#         with:
-#           registry: ghcr.io
-#           username: ${{ github.actor }}
-#           password: ${{ secrets.GITHUB_TOKEN }}
-#
-#       - name: Pull serve image
-#         # run: docker pull ghcr.io/${{ github.repository }}:serving-${{ github.event.workflow_run.head_sha }}
-#         run: docker pull ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
-#
-#       - name: Start gateway on :8000
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#         run: |
-#           docker rm -f model-gateway || true
-#           docker run -d --name model-gateway -p 8000:8000 \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -e MODEL_NAME="taxi-duration" \
-#             -e MODEL_ALIAS_STABLE="production" \
-#             -e MODEL_ALIAS_CAND="staging" \
-#             ghcr.io/${{ github.repository }}:serving-72f8e0f8de9e1b325f52b7dfe21650bdd862275c
-#
-#           sleep 2
-#           curl -fsS http://localhost:8000/health
-#
-#       - name: Check if Production alias exists
-#         id: hasprod
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#         run: |
-#           docker run --rm --network host \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-#             "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py has-production" > has_prod.txt
-#           echo "HAS_PROD=$(tr -d '\n\r' < has_prod.txt)" >> $GITHUB_OUTPUT
-#
-#       # First run: 100% candidate, then promote
-#       - name: First run → 100% candidate immediately
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '0' }}
-#         run: |
-#           curl -fsS -X POST http://localhost:8000/admin/weights \
-#             -H "Content-Type: application/json" \
-#             -d '{"cand_weight":100}'
-#           curl -fsS http://localhost:8000/health
-#
-#       - name: First run → promote staging → production
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '0' }}
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#         run: |
-#           docker run --rm --network host \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-#             "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py promote-staging-to-production"
-#
-#       # Subsequent runs: 10% → soak 5m → 50% → soak 5m → 100%, then promote
-#       - name: Canary 10%
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         run: |
-#           curl -fsS -X POST http://localhost:8000/admin/weights \
-#             -H "Content-Type: application/json" \
-#             -d '{"stable_weight":90,"cand_weight":10}'
-#           curl -fsS http://localhost:8000/health
-#
-#       - name: Soak at 10% (5 minutes)
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         run: sleep 200
-#
-#       - name: Canary 50%
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         run: |
-#           curl -fsS -X POST http://localhost:8000/admin/weights \
-#             -H "Content-Type: application/json" \
-#             -d '{"cand_weight":50}'
-#           curl -fsS http://localhost:8000/health
-#
-#       - name: Soak at 50% (5 minutes)
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         run: sleep 200
-#
-#       - name: Canary 100%
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         run: |
-#           curl -fsS -X POST http://localhost:8000/admin/weights \
-#             -H "Content-Type: application/json" \
-#             -d '{"cand_weight":100}'
-#           curl -fsS http://localhost:8000/health
-#
-#       - name: Promote staging → production
-#         if: ${{ steps.hasprod.outputs.HAS_PROD == '1' }}
-#         env:
-#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-#         run: |
-#           docker run --rm --network host \
-#             -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
-#             -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
-#             "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py promote-staging-to-production"
-#
+name: CD
+run-name: "${{ github.workflow }}"
+
+permissions: write-all
+
+on:
+
+  workflow_dispatch:
+
+  workflow_run:
+    workflows: ["CI Serve"]
+    types: [completed]
+
+jobs:
+  train:
+
+    # note(@morenoblue): `github.event.workflow_run.event == 'workflow_run'` 
+    #                    this line tells us whether the CI Serve was triggered 
+    #                    by CI Train or was it something we did manually using 
+    #                    `workflow_dispatch` in the ui. It is very useful because
+    #                    when using the CI Serve `workflow_dispatch` from the 
+    #                    github ui, we are usually doing little experiments and 
+    #                    don't want the full training to happen.
+
+    if: ${{
+              (
+                github.event.workflow_run.conclusion == 'success' &&
+                github.event.workflow_run.event == 'workflow_run'
+              ) ||
+              github.event_name == 'workflow_dispatch'
+        }}
+
+    runs-on: [self-hosted, trainer]
+    outputs:
+      PROMOTE: ${{ steps.promote.outputs.PROMOTE }}
+
+    env:
+      TRAIN_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
+      TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
+
+    steps:
+
+      - name: Clone the repo to the runner vm
+        uses: actions/checkout@v4
+
+      # - name: Install docker on the vm
+      #   uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pick correct train image
+        run: |
+          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
+            echo "Using TRAIN_IMAGE_CURRENT: ${TRAIN_IMAGE_CURRENT}"
+            echo "TRAIN_IMAGE=${TRAIN_IMAGE_CURRENT}" >> "$GITHUB_ENV"
+          else
+            echo "Using TRAIN_IMAGE_LATEST: ${TRAIN_IMAGE_LATEST}"
+            echo "TRAIN_IMAGE=${TRAIN_IMAGE_LATEST}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Train and register to mlflow
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          docker run --rm --network host \
+            -v "$HOME/train_data:/data:ro" \
+            -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
+            -e DATA_PATH="/data" \
+            -e TRAIN_NROWS="1000" \
+            "$TRAIN_IMAGE" | tee out.txt
+
+      - name: Output promote flag
+        id: promote
+        run: |
+          v=$(grep -o 'PROMOTE=[01]' out.txt | tail -n1 | cut -d= -f2 || echo 1)
+          echo "PROMOTE=$([ "$v" = "1" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+  move_model_to_staging:
+    needs: [train]
+    if: ${{ needs.train.outputs.PROMOTE == 'true' }}
+    runs-on: [self-hosted, staging]
+
+    env:
+      SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
+      SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
+
+    steps:
+      - name: Clone the repo to the runner vm
+      - uses: actions/checkout@v4
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pick correct serve image 
+        run: |
+          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
+            echo "Using SERVE_IMAGE_CURRENT: ${SERVE_IMAGE_CURRENT}"
+            echo "SERVE_IMAGE=${SERVE_IMAGE_CURRENT}" >> "$GITHUB_ENV"
+          else
+            echo "Using SERVE_IMAGE_LATEST: ${SERVE_IMAGE_LATEST}"
+            echo "SERVE_IMAGE=${SERVE_IMAGE_LATEST}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Serve
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          docker rm -f model-staging || true
+          docker run -d --name model-staging -p 8000:8000 \
+            -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
+            -e MODEL_NAME="taxi-duration" \
+            -e MODEL_ALIAS_STABLE="production" \
+            -e MODEL_ALIAS_CAND="staging" \
+            "$SERVE_IMAGE"
+
+      - name: Dump model-staging logs
+        if: failure()
+        run: |
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== logs for model-staging ==="
+          docker logs model-staging || true
+
+      - name: Check the server's health
+        run: |
+          max_retries=15
+          for i in $(seq 1 "$max_retries"); do
+            echo "Checking /health (attempt $i/$max_retries)..."
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "Server is healthy ✅"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Server did not become healthy in time ❌"
+          echo "=== Server logs ==="
+          docker logs model-staging || true
+          exit 1
+
+      - name: Smoke test the server
+        run: |
+          curl -sS -X POST http://localhost:8000/admin/weights \
+               -H "Content-Type: application/json" \
+               -d '{"cand_weight":100}'
+
+          curl -sS -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{
+                  "records":[
+                                 {
+                                     "vendor_id":1,
+                                     "pickup_datetime":"2010-01-15T08:30:00",
+                                     "dropoff_datetime":"2010-01-15T08:45:00",
+                                     "passenger_count":1,
+                                     "trip_distance":2.3,
+                                     "pickup_longitude":-73.99,
+                                     "pickup_latitude":40.73,
+                                     "rate_code":1,
+                                     "dropoff_longitude":-73.98,
+                                     "dropoff_latitude":40.75,
+                                     "fare_amount":12.5,
+                                     "surcharge":0.5,
+                                     "mta_tax":0.5,
+                                     "tip_amount":2.0,
+                                     "tolls_amount":0.0,
+                                     "total_amount":15.5,
+                                     "store_and_fwd_flag":"N",
+                                     "payment_type":"CRD"
+                                 }
+                            ]
+                }'
+                            
+
+  move_model_to_production:
+    needs: [train, move_model_to_staging]
+    if: ${{ needs.train.outputs.PROMOTE == 'true' }}
+    runs-on: [self-hosted, production]
+
+    env:
+      SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
+      SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
+
+    steps:
+
+      - name: Clone the repo to the runner vm
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pick correct serve image  
+        run: |
+          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
+            echo "Using SERVE_IMAGE_CURRENT (prod): ${SERVE_IMAGE_CURRENT}"
+            echo "SERVE_IMAGE=${SERVE_IMAGE_CURRENT}" >> "$GITHUB_ENV"
+          else
+            echo "Using SERVE_IMAGE_LATEST (prod): ${SERVE_IMAGE_LATEST}"
+            echo "SERVE_IMAGE=${SERVE_IMAGE_LATEST}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Serve
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          docker rm -f model-gateway || true
+          docker run -d --name model-gateway -p 8000:8000 \
+            -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
+            -e MODEL_NAME="taxi-duration" \
+            -e MODEL_ALIAS_STABLE="production" \
+            -e MODEL_ALIAS_CAND="staging" \
+            "$SERVE_IMAGE"
+
+      - name: Check the server's health
+        run: |
+          max_retries=15
+          for i in $(seq 1 "$max_retries"); do
+            echo "Checking /health (attempt $i/$max_retries)..."
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "Server is healthy ✅"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Server did not become healthy in time ❌"
+          echo "=== Server logs ==="
+          docker logs model-gateway || true
+          exit 1
+
+      - name: Send 100% traffic to candidate
+        run: |
+          curl -sS -X POST http://localhost:8000/admin/weights \
+            -H "Content-Type: application/json" \
+            -d '{"cand_weight":100}'
+
+      - name: Promote mlflow tag from staging to production
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          docker run --rm --network host \
+            -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}" \
+            -v "$PWD:/w" -w /w python:3.11-slim bash -lc \
+            "python -m pip install -q mlflow>=2.8 && python src/utils/mlops.py promote-staging-to-production"
+
