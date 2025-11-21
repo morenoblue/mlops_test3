@@ -21,9 +21,6 @@ jobs:
     runs-on: [self-hosted, trainer]
 
     env:
-      TRAIN_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
-      TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
-
       SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
       SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
 
@@ -34,18 +31,8 @@ jobs:
       - name: Clone the repo to the runner vm
         uses: actions/checkout@v4
 
-      - name: Install docker on the vm
-        uses: docker/setup-buildx-action@v3
-
-      - name: Decide which training image to use
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "Using TRAIN_IMAGE_CURRENT (train-${{ github.sha }})"
-            echo "TRAIN_IMAGE=${{ env.TRAIN_IMAGE_CURRENT }}" >> "$GITHUB_ENV"
-          else
-            echo "Using TRAIN_IMAGE_LATEST (train-latest)"
-            echo "TRAIN_IMAGE=${{ env.TRAIN_IMAGE_LATEST }}" >> "$GITHUB_ENV"
-          fi
+      # - name: Install docker on the vm
+      #   uses: docker/setup-buildx-action@v3
 
       - name: Build the serving image
         uses: docker/build-push-action@v6

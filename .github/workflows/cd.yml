@@ -34,8 +34,7 @@ jobs:
       PROMOTE: ${{ steps.promote.outputs.PROMOTE }}
 
     env:
-      TRAIN_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:train-${{ github.sha }}
-      TRAIN_IMAGE_LATEST: ghcr.io/${{ github.repository }}:train-latest
+      TRAIN_IMAGE: ghcr.io/${{ github.repository }}:train-latest
 
     steps:
 
@@ -51,16 +50,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pick correct train image
-        run: |
-          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
-            echo "Using TRAIN_IMAGE_CURRENT: ${TRAIN_IMAGE_CURRENT}"
-            echo "TRAIN_IMAGE=${TRAIN_IMAGE_CURRENT}" >> "$GITHUB_ENV"
-          else
-            echo "Using TRAIN_IMAGE_LATEST: ${TRAIN_IMAGE_LATEST}"
-            echo "TRAIN_IMAGE=${TRAIN_IMAGE_LATEST}" >> "$GITHUB_ENV"
-          fi
 
       - name: Train and register to mlflow
         env:
@@ -85,8 +74,7 @@ jobs:
     runs-on: [self-hosted, staging]
 
     env:
-      SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
-      SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
+      SERVE_IMAGE: ghcr.io/${{ github.repository }}:serve-latest
 
     steps:
 
@@ -99,16 +87,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pick correct serve image 
-        run: |
-          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
-            echo "Using SERVE_IMAGE_CURRENT: ${SERVE_IMAGE_CURRENT}"
-            echo "SERVE_IMAGE=${SERVE_IMAGE_CURRENT}" >> "$GITHUB_ENV"
-          else
-            echo "Using SERVE_IMAGE_LATEST: ${SERVE_IMAGE_LATEST}"
-            echo "SERVE_IMAGE=${SERVE_IMAGE_LATEST}" >> "$GITHUB_ENV"
-          fi
 
       - name: Serve
         env:
@@ -187,8 +165,7 @@ jobs:
     runs-on: [self-hosted, production]
 
     env:
-      SERVE_IMAGE_CURRENT: ghcr.io/${{ github.repository }}:serve-${{ github.sha }}
-      SERVE_IMAGE_LATEST: ghcr.io/${{ github.repository }}:serve-latest
+      SERVE_IMAGE: ghcr.io/${{ github.repository }}:serve-latest
 
     steps:
 
@@ -201,16 +178,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pick correct serve image  
-        run: |
-          if [ "${{ github.event.workflow_run.event }}" = "workflow_run" ]; then
-            echo "Using SERVE_IMAGE_CURRENT (prod): ${SERVE_IMAGE_CURRENT}"
-            echo "SERVE_IMAGE=${SERVE_IMAGE_CURRENT}" >> "$GITHUB_ENV"
-          else
-            echo "Using SERVE_IMAGE_LATEST (prod): ${SERVE_IMAGE_LATEST}"
-            echo "SERVE_IMAGE=${SERVE_IMAGE_LATEST}" >> "$GITHUB_ENV"
-          fi
 
       - name: Serve
         env:
